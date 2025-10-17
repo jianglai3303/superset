@@ -25,6 +25,12 @@ import os
 
 from celery.schedules import crontab
 from flask_caching.backends.filesystemcache import FileSystemCache
+from flask_appbuilder import expose
+from flask import Blueprint, current_app
+from flask import request, jsonify
+from datetime import datetime, timedelta
+# from superset.models.rbac import RowLevelSecurityRule
+# from superset import db
 
 logger = logging.getLogger()
 
@@ -71,7 +77,6 @@ CACHE_CONFIG = {
 }
 DATA_CACHE_CONFIG = CACHE_CONFIG
 
-
 class CeleryConfig:
     broker_url = f"redis://{REDIS_HOST}:{REDIS_PORT}/{REDIS_CELERY_DB}"
     imports = (
@@ -116,7 +121,7 @@ OAUTH_PROVIDERS = [
         "remote_app": {
             "client_id": "Superset",
             "client_secret": "Hsq03ihgnbuw26oThwlBP6qzHa7teuTT",
-            "api_base_url": "http://host.docker.internal:8080/realms/master/protocol/openid-connect",
+            "api_base_url": "http://host.docker.internal:8080/realms/master/protocol/openid-connect/",
             "client_kwargs": {
                 "scope": "email openid profile",
             },
@@ -135,9 +140,8 @@ AUTH_ROLE_PUBLIC = 'Public'
 
 # Will allow user self registration, allowing to create Flask users from Authorized User
 AUTH_USER_REGISTRATION = True
-
+AUTH_USER_REGISTRATION_ROLE = "Admin"
 # The default user self registration role
-AUTH_USER_REGISTRATION_ROLE = "Gamma"
 AUTH_ROLES_SYNC_AT_LOGIN = True
 ENABLE_CORS = True
 CORS_OPTIONS = {
@@ -158,31 +162,126 @@ from superset.security import SupersetSecurityManager
 
 
 # Set algorithm to RS256
-# JWT_ALGORITHM = "RS256"
-# JWT_DECODE_ALGORITHMS = ["RS256"]
+JWT_ALGORITHM = "RS256"
+JWT_DECODE_ALGORITHMS = ["RS256"]
 
 # Dynamically fetch public key from Keycloak JWKS URL
-# jwks_url = "http://localhost:8080/auth/realms/master/protocol/openid-connect/certs"
+jwks_url = "http://host.docker.internal:8080/realms/master/protocol/openid-connect/certs"
 
-# def fetch_keycloak_rs256_public_cert():
-#     with urllib.request.urlopen(jwks_url) as response:
-#         jwks = json.load(response)
-#     # Uses the second key
-#     return RSAAlgorithm.from_jwk(json.dumps(jwks["keys"][1]))
+def fetch_keycloak_rs256_public_cert():
+    with urllib.request.urlopen(jwks_url) as response:
+        jwks = json.load(response)
+    # Uses the second key
+    return RSAAlgorithm.from_jwk(json.dumps(jwks["keys"][1]))
 
-# JWT_PUBLIC_KEY = fetch_keycloak_rs256_public_cert()
+JWT_PUBLIC_KEY = fetch_keycloak_rs256_public_cert()
 
 class CustomSecurityManager(SupersetSecurityManager):
-    def load_user_jwt(self, _jwt_header, jwt_payload):
-        # Use a string-based claim instead of trying to cast sub to int
-        username = jwt_payload.get("preferred_username") or jwt_payload.get("email")
-        if not username:
-            raise Exception("JWT does not contain preferred_username or email")
-        user = self.get_user_by_username(username)
-        g.user = user
-        return user
+    def map_keycloak_role(self, kc_role: str) -> str | None:
+        """
+        Map Keycloak roles to Superset roles dynamically.
+        """
+        mapping = {
+            "KeycloakAdmin": "Admin",
+            "KeycloakUser": "Gamma",
+        }
+        
+        return mapping.get(kc_role)
+    
+    def oauth_user_info(self, provider, response=None):
+        if provider == "keycloak":
+            user_info = self.oauth_remotes[provider].get("userinfo").json()
+            print(f">>> OAuth user info: {user_info}")
+             # Handle both formats:
+            keycloak_roles = (
+                user_info.get("roles")
+                or user_info.get("realm_access", {}).get("roles")
+                or []
+            )
+            print(f">>> keycloak_roles: {keycloak_roles}")
+            # superset_roles = []
+            # for kc_role in keycloak_roles:
+            #     mapped_role_name = self.map_keycloak_role(kc_role)
+            #     print(f">>> Keycloak roles detected: {kc_role} -> {mapped_role_name}")
+            #     if mapped_role_name:
+            #         superset_role = self.find_role(mapped_role_name)
+            #         if superset_role:
+            #             superset_roles.append(superset_role)
+            # username = user_info.get("preferred_username")
+            # email = user_info.get("email")
+            # user = self.get_user_by_username(username)
+            # print(f">>> User {id(user)} found by username: {username} ")
+            # if not user and email:
+            #     user = self.get_user_by_email(email)
+            # print(f">>> User {id(user)} found by email: {email} ")
+            # if user:
+            #     # Clear existing roles and assign new ones
+            #     print(f">>> User {id(user)} found, previous roles: {user.roles}, adding {superset_roles} ")
+            #     user.roles = superset_roles
+            #     self.get_session.commit()
+            # else:
+            #     print(f">>> User {username} not found, will be auto-registered")
+            return {
+                "username": user_info.get("preferred_username"),
+                "email": user_info.get("email"),
+                "first_name": user_info.get("given_name"),
+                "last_name": user_info.get("family_name"),
+            }
+        return super().oauth_user_info(provider, response)
 
 CUSTOM_SECURITY_MANAGER = CustomSecurityManager
+
+# ------------------------------
+# Guest Token Blueprint
+# ------------------------------
+guest_api_bp = Blueprint(
+    "guest_api", __name__, url_prefix="/api/v1/guest"
+)
+
+@guest_api_bp.route("/guest_token_sso", methods=["POST"])
+def guest_token_sso():
+    sm: SupersetSecurityManager = current_app.appbuilder.sm
+    data = request.json
+    keycloak_jwt = data.get("jwt")
+    dashboard_ids = data.get("dashboard_ids")
+    if not keycloak_jwt or not dashboard_ids:
+        return jsonify({"error": "jwt and dashboard_ids required"}), 400
+    try:
+        user_info = jwt.decode(
+            keycloak_jwt,
+            JWT_PUBLIC_KEY,
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_aud": False}  # Skip audience check if needed
+        )
+    except jwt.PyJWTError as e:
+        return jsonify({"error": f"invalid token: {str(e)}"}), 401
+    
+    username = user_info.get("preferred_username")
+
+    user = sm.get_user_by_username(username)
+    if not user:
+        return jsonify({"error": "user not found"}), 404
+
+    roles = [role.name for role in user.roles]
+
+    user_rls = []
+    # for rule in db.session.query(RowLevelSecurityRule).all():
+    #     rule_roles = [role.name for role in rule.roles]
+    #     if set(roles) & set(rule_roles):
+    #         user_rls.append({
+    #             "dataset": rule.table_id,
+    #             "clause": rule.clause
+    #         })
+    resources = [{"type": "dashboard", "id": dash_id} for dash_id in dashboard_ids]
+    token = sm.create_guest_access_token(
+        user={"username": user.username, "roles": roles},
+        resources=resources,
+        rls=user_rls,
+    )
+
+    return jsonify({"username": user.username, "roles": roles, "rls_rules": user_rls, "guest_token": token})
+
+BLUEPRINTS = [guest_api_bp]
 #
 # Optionally import superset_config_docker.py (which will have been included on
 # the PYTHONPATH) in order to allow for local settings to be overridden
@@ -192,7 +291,7 @@ try:
     from superset_config_docker import *  # noqa
 
     logger.info(
-        f"Loaded your Docker configuration at " f"[{superset_config_docker.__file__}]"
+        f"Loaded Your Docker configuration at " f"[{superset_config_docker.__file__}]"
     )
 except ImportError:
     logger.info("Using default Docker config...")

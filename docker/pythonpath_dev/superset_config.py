@@ -151,6 +151,21 @@ CORS_OPTIONS = {
         'http://localhost:3000'
     ]
 }
+TALISMAN_ENABLED = False
+TALISMAN_CONFIG = {
+    "content_security_policy": {
+        "frame-ancestors": ["*.127.0.0.1:5500", "*.localhost:3000"],
+    }
+}
+HTTP_HEADERS = {
+    'X-Frame-Options': 'ALLOWALL'
+}
+FEATURE_FLAGS = {
+    # ... other feature flags
+    "EMBEDDED_SUPERSET": True,
+}
+
+GUEST_ROLE_NAME = "Admin"
 
 import json
 import urllib.request
@@ -202,28 +217,6 @@ class CustomSecurityManager(SupersetSecurityManager):
                 or []
             )
             print(f">>> keycloak_roles: {keycloak_roles}")
-            # superset_roles = []
-            # for kc_role in keycloak_roles:
-            #     mapped_role_name = self.map_keycloak_role(kc_role)
-            #     print(f">>> Keycloak roles detected: {kc_role} -> {mapped_role_name}")
-            #     if mapped_role_name:
-            #         superset_role = self.find_role(mapped_role_name)
-            #         if superset_role:
-            #             superset_roles.append(superset_role)
-            # username = user_info.get("preferred_username")
-            # email = user_info.get("email")
-            # user = self.get_user_by_username(username)
-            # print(f">>> User {id(user)} found by username: {username} ")
-            # if not user and email:
-            #     user = self.get_user_by_email(email)
-            # print(f">>> User {id(user)} found by email: {email} ")
-            # if user:
-            #     # Clear existing roles and assign new ones
-            #     print(f">>> User {id(user)} found, previous roles: {user.roles}, adding {superset_roles} ")
-            #     user.roles = superset_roles
-            #     self.get_session.commit()
-            # else:
-            #     print(f">>> User {username} not found, will be auto-registered")
             return {
                 "username": user_info.get("preferred_username"),
                 "email": user_info.get("email"),
@@ -279,7 +272,7 @@ def guest_token_sso():
                 })
     resources = [{"type": "dashboard", "id": dash_id} for dash_id in dashboard_ids]
     token = sm.create_guest_access_token(
-        user={"username": user.username, "roles": roles},
+        user={"username": user.username},
         resources=resources,
         rls=user_rls,
     )

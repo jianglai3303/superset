@@ -103,7 +103,87 @@ WEBDRIVER_BASEURL = "http://superset:8088/"  # When using docker compose baseurl
 # The base URL for the email report hyperlinks.
 WEBDRIVER_BASEURL_USER_FRIENDLY = WEBDRIVER_BASEURL
 SQLLAB_CTAS_NO_LIMIT = True
+# This will make sure the redirect_uri is properly computed, even with SSL offloading
+ENABLE_PROXY_FIX = True
 
+from flask_appbuilder.security.manager import AUTH_OAUTH
+AUTH_TYPE = AUTH_OAUTH
+OAUTH_PROVIDERS = [
+    {
+        "name": "keycloak",
+        "icon": "keycloak",
+        "token_key": "access_token",
+        "remote_app": {
+            "client_id": "Superset",
+            "client_secret": "Hsq03ihgnbuw26oThwlBP6qzHa7teuTT",
+            "api_base_url": "http://host.docker.internal:8080/realms/master/protocol/openid-connect",
+            "client_kwargs": {
+                "scope": "email openid profile",
+            },
+            "request_token_url": None,
+            "access_token_url": "http://host.docker.internal:8080/realms/master/protocol/openid-connect/token",
+            "userinfo_endpoint": "http://host.docker.internal:8080/realms/master/protocol/openid-connect/userinfo",
+            "authorize_url": "http://host.docker.internal:8080/realms/master/protocol/openid-connect/auth",
+            "jwks_uri": "http://host.docker.internal:8080/realms/master/protocol/openid-connect/certs",
+        },
+    }
+]
+
+# Map Authlib roles to superset roles
+AUTH_ROLE_ADMIN = 'Admin'
+AUTH_ROLE_PUBLIC = 'Public'
+
+# Will allow user self registration, allowing to create Flask users from Authorized User
+AUTH_USER_REGISTRATION = True
+
+# The default user self registration role
+AUTH_USER_REGISTRATION_ROLE = "Gamma"
+AUTH_ROLES_SYNC_AT_LOGIN = True
+KEYCLOAK_ROLE_MAPPING = {"realm_access": {"roles": "rolename"}}
+ENABLE_CORS = True
+CORS_OPTIONS = {
+    'supports_credentials': True,
+    'allow_headers': ['*'],
+    'resources': ['*'],
+    'origins': [
+        'http://localhost:3000'
+    ]
+}
+
+import json
+import urllib.request
+from jwt.algorithms import RSAAlgorithm
+import jwt
+from flask import g
+from superset.security import SupersetSecurityManager
+
+
+# Set algorithm to RS256
+# JWT_ALGORITHM = "RS256"
+# JWT_DECODE_ALGORITHMS = ["RS256"]
+
+# Dynamically fetch public key from Keycloak JWKS URL
+# jwks_url = "http://localhost:8080/auth/realms/master/protocol/openid-connect/certs"
+
+# def fetch_keycloak_rs256_public_cert():
+#     with urllib.request.urlopen(jwks_url) as response:
+#         jwks = json.load(response)
+#     # Uses the second key
+#     return RSAAlgorithm.from_jwk(json.dumps(jwks["keys"][1]))
+
+# JWT_PUBLIC_KEY = fetch_keycloak_rs256_public_cert()
+
+class CustomSecurityManager(SupersetSecurityManager):
+    def load_user_jwt(self, _jwt_header, jwt_payload):
+        # Use a string-based claim instead of trying to cast sub to int
+        username = jwt_payload.get("preferred_username") or jwt_payload.get("email")
+        if not username:
+            raise Exception("JWT does not contain preferred_username or email")
+        user = self.get_user_by_username(username)
+        g.user = user
+        return user
+
+CUSTOM_SECURITY_MANAGER = CustomSecurityManager
 #
 # Optionally import superset_config_docker.py (which will have been included on
 # the PYTHONPATH) in order to allow for local settings to be overridden

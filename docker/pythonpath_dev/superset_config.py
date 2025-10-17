@@ -29,8 +29,7 @@ from flask_appbuilder import expose
 from flask import Blueprint, current_app
 from flask import request, jsonify
 from datetime import datetime, timedelta
-# from superset.models.rbac import RowLevelSecurityRule
-# from superset import db
+
 
 logger = logging.getLogger()
 
@@ -176,6 +175,10 @@ def fetch_keycloak_rs256_public_cert():
 
 JWT_PUBLIC_KEY = fetch_keycloak_rs256_public_cert()
 
+def get_rls_model():
+    from superset import db
+    from superset.connectors.sqla.models import RowLevelSecurityFilter
+    return db, RowLevelSecurityFilter
 class CustomSecurityManager(SupersetSecurityManager):
     def map_keycloak_role(self, kc_role: str) -> str | None:
         """
@@ -265,13 +268,15 @@ def guest_token_sso():
     roles = [role.name for role in user.roles]
 
     user_rls = []
-    # for rule in db.session.query(RowLevelSecurityRule).all():
-    #     rule_roles = [role.name for role in rule.roles]
-    #     if set(roles) & set(rule_roles):
-    #         user_rls.append({
-    #             "dataset": rule.table_id,
-    #             "clause": rule.clause
-    #         })
+    db, RowLevelSecurityFilter = get_rls_model()
+    for rule in db.session.query(RowLevelSecurityFilter).all():
+        rule_roles = [role.name for role in rule.roles]
+        if set(roles) & set(rule_roles):
+            for table in rule.tables:
+                user_rls.append({
+                    "dataset": table.id,
+                    "clause": rule.clause
+                })
     resources = [{"type": "dashboard", "id": dash_id} for dash_id in dashboard_ids]
     token = sm.create_guest_access_token(
         user={"username": user.username, "roles": roles},

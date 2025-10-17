@@ -139,7 +139,6 @@ AUTH_USER_REGISTRATION = True
 # The default user self registration role
 AUTH_USER_REGISTRATION_ROLE = "Gamma"
 AUTH_ROLES_SYNC_AT_LOGIN = True
-KEYCLOAK_ROLE_MAPPING = {"realm_access": {"roles": "rolename"}}
 ENABLE_CORS = True
 CORS_OPTIONS = {
     'supports_credentials': True,

@@ -194,6 +194,7 @@ def get_rls_model():
     from superset import db
     from superset.connectors.sqla.models import RowLevelSecurityFilter
     return db, RowLevelSecurityFilter
+
 class CustomSecurityManager(SupersetSecurityManager):
     def map_keycloak_role(self, kc_role: str) -> str | None:
         """
@@ -262,22 +263,26 @@ def guest_token_sso():
 
     user_rls = []
     db, RowLevelSecurityFilter = get_rls_model()
-    for rule in db.session.query(RowLevelSecurityFilter).all():
-        rule_roles = [role.name for role in rule.roles]
-        if set(roles) & set(rule_roles):
-            for table in rule.tables:
-                user_rls.append({
-                    "dataset": table.id,
-                    "clause": rule.clause
-                })
+    # Filter RLS rules at the database level by joining with roles
+    relevant_rules = (
+        db.session.query(RowLevelSecurityFilter)
+        .join(RowLevelSecurityFilter.roles)
+        .filter(RowLevelSecurityFilter.roles.any(current_app.appbuilder.sm.role_model.name.in_(roles)))
+        .all()
+    )
+    for rule in relevant_rules:
+        for table in rule.tables:
+            user_rls.append({
+                "dataset": table.id,
+                "clause": rule.clause
+            })
     resources = [{"type": "dashboard", "id": dash_id} for dash_id in dashboard_ids]
     token = sm.create_guest_access_token(
         user={"username": user.username},
         resources=resources,
         rls=user_rls,
     )
-
-    return jsonify({"username": user.username, "roles": roles, "rls_rules": user_rls, "guest_token": token})
+    return jsonify({"username": user.username, "guest_token": token})
 
 BLUEPRINTS = [guest_api_bp]
 #

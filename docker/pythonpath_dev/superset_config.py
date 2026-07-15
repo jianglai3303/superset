@@ -193,7 +193,8 @@ JWT_PUBLIC_KEY = fetch_keycloak_rs256_public_cert()
 def get_rls_model():
     from superset import db
     from superset.connectors.sqla.models import RowLevelSecurityFilter
-    return db, RowLevelSecurityFilter
+    from superset.models.embedded_dashboard import EmbeddedDashboard
+    return db, RowLevelSecurityFilter, EmbeddedDashboard
 
 class CustomSecurityManager(SupersetSecurityManager):
     def map_keycloak_role(self, kc_role: str) -> str | None:
@@ -243,6 +244,20 @@ def guest_token_sso():
     dashboard_ids = data.get("dashboard_ids")
     if not keycloak_jwt or not dashboard_ids:
         return jsonify({"error": "jwt and dashboard_ids required"}), 400
+    
+    import uuid
+    invalid_uuids = []
+    for dashboard_id in dashboard_ids:
+        try:
+            uuid.UUID(dashboard_id)
+        except (ValueError, TypeError):
+            invalid_uuids.append(dashboard_id)
+    
+    if invalid_uuids:
+        return jsonify({
+            "error": f"Invalid UUID format for dashboard ID(s): {invalid_uuids}"
+        }), 400
+        
     try:
         user_info = jwt.decode(
             keycloak_jwt,
@@ -253,6 +268,19 @@ def guest_token_sso():
     except jwt.PyJWTError as e:
         return jsonify({"error": f"invalid token: {str(e)}"}), 401
     
+    db, RowLevelSecurityFilter, EmbeddedDashboard = get_rls_model()
+    existing_embedded_ids = {
+        str(dashboard.uuid) for dashboard in db.session.query(EmbeddedDashboard.uuid).filter(
+            EmbeddedDashboard.uuid.in_(dashboard_ids)
+        ).all()
+    }
+    missing_embedded_ids = [embedded_id for embedded_id in dashboard_ids if embedded_id not in existing_embedded_ids]
+    
+    if missing_embedded_ids:
+        return jsonify({
+            "error": f"Dashboard(s) with embedded ID(s) not found: {missing_embedded_ids}"
+        }), 404
+            
     username = user_info.get("preferred_username")
 
     user = sm.get_user_by_username(username)
@@ -262,7 +290,6 @@ def guest_token_sso():
     roles = [role.name for role in user.roles]
 
     user_rls = []
-    db, RowLevelSecurityFilter = get_rls_model()
     # Filter RLS rules at the database level by joining with roles
     relevant_rules = (
         db.session.query(RowLevelSecurityFilter)
